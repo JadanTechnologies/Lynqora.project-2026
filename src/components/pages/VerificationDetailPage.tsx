@@ -13,7 +13,18 @@ import {
   Copy, 
   Check, 
   Info,
-  AlertCircle
+  AlertCircle,
+  Play,
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  Server,
+  Shield,
+  Link,
+  Mail,
+  FileText,
+  Lock,
+  Globe as GlobeIcon
 } from 'lucide-react';
 
 export const VerificationDetailPage: React.FC = () => {
@@ -26,32 +37,53 @@ export const VerificationDetailPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runMessage, setRunMessage] = useState('');
+  const [expandedCheck, setExpandedCheck] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadDetails = async () => {
     if (!verificationId || !token) return;
-
     setLoading(true);
     setError('');
+    try {
+      const res = await fetch(`/api/verifications/${verificationId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || 'Verification record not found.');
+      }
+      const data = await res.json();
+      setVerification(data.verification);
+      setChecks(data.checks || []);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load details.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    fetch(`/api/verifications/${verificationId}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          const d = await res.json().catch(() => ({}));
-          throw new Error(d.error || 'Verification record not found.');
-        }
-        return res.json();
-      })
-      .then((data) => {
-        setVerification(data.verification);
-        setChecks(data.checks || []);
-      })
-      .catch((err) => {
-        setError(err.message || 'Failed to load details.');
-      })
-      .finally(() => setLoading(false));
-  }, [verificationId, token]);
+  useEffect(() => { loadDetails(); }, [verificationId, token]);
+
+  const handleRunVerification = async () => {
+    if (!token) return;
+    setRunning(true);
+    setRunMessage('');
+    try {
+      const res = await fetch(`/api/verifications/${verificationId}/run`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to run verification.');
+      setRunMessage(`Verification completed. Score: ${data.score}/100`);
+      await loadDetails();
+    } catch (err: any) {
+      setRunMessage(err.message || 'Verification failed.');
+    } finally {
+      setRunning(false);
+    }
+  };
 
   const handleCopyPublicUrl = () => {
     const url = `${window.location.origin}/verify/${verificationId}`;
@@ -172,11 +204,43 @@ export const VerificationDetailPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Phase 1 Explanatory Card */}
-        <div className="p-4 rounded-xl bg-sky-50/70 border border-sky-200/60 text-xs text-sky-900 leading-relaxed flex items-start gap-3">
-          <Info className="w-4 h-4 text-sky-700 shrink-0 mt-0.5" />
+        {/* Technical Verification Score */}
+        <div className="flex flex-col sm:flex-row items-center gap-6 bg-slate-50 rounded-xl p-5 border border-slate-100">
+          <div className="relative w-24 h-24 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: `conic-gradient(#3b82f6 ${(verification.score || 0) * 1}%, #e5e7eb ${(verification.score || 0) * 1}%)` }}
+          >
+            <div className="absolute inset-2 bg-white rounded-full flex items-center justify-center flex-col">
+              <span className="text-xl font-extrabold text-slate-900 font-mono">{verification.score || 0}</span>
+              <span className="text-[10px] text-slate-500">/ 100</span>
+            </div>
+          </div>
+          <div className="flex-1 text-center sm:text-left">
+            <h3 className="text-sm font-bold text-slate-900">Technical Verification Score</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              This score summarizes available technical signals. It is not a guarantee that a website, business, or transaction is safe.
+            </p>
+            {runMessage && (
+              <p className="text-xs text-emerald-600 mt-2 font-medium">{runMessage}</p>
+            )}
+          </div>
+          <button
+            onClick={handleRunVerification}
+            disabled={running}
+            className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors flex items-center gap-2 shrink-0 disabled:opacity-50"
+          >
+            {running ? (
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <RefreshCw className="w-3.5 h-3.5" />
+            )}
+            {running ? 'Running...' : 'Run Verification Again'}
+          </button>
+        </div>
+        {/* Important Notice */}
+        <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200/60 text-xs text-amber-900 leading-relaxed flex items-start gap-3">
+          <Info className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
           <div>
-            <span className="font-semibold">Review Status:</span> Your domain is currently registered with status <span className="font-semibold text-slate-900">{verification.status.replace('_', ' ')}</span>. In Phase 1, verification checks establish the database schema and public verification URL. Advanced automated checks are scheduled for deployment in Phase 2.
+            <span className="font-semibold">Important Notice:</span> Lynqora verification results represent available technical and identity signals at the time of checking. They are not a guarantee against fraud, scams, malware, or financial loss. Website conditions can change.
           </div>
         </div>
       </div>
@@ -199,16 +263,29 @@ export const VerificationDetailPage: React.FC = () => {
 
         <div className="divide-y divide-slate-100">
           {checks.map((c) => (
-            <div key={c.id} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <div className="font-semibold text-xs text-slate-900">
-                  {c.checkType.replace(/_/g, ' ')}
+            <div key={c.id}>
+              <button
+                onClick={() => setExpandedCheck(expandedCheck === c.id ? null : c.id)}
+                className="w-full py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-left hover:bg-slate-50/50 transition-colors px-2 rounded-lg"
+              >
+                <div className="flex items-center gap-3">
+                  <StatusBadge status={c.status} size="sm" />
+                  <div>
+                    <div className="font-semibold text-xs text-slate-900">{c.checkType.replace(/_/g, ' ')}</div>
+                    <div className="text-[11px] text-slate-500 max-w-lg leading-relaxed">{c.result || c.details}</div>
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-500 max-w-lg leading-relaxed">
-                  {c.details}
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono text-slate-400">{c.score || 0}pts</span>
+                  {expandedCheck === c.id ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
                 </div>
-              </div>
-              <StatusBadge status={c.status} size="sm" />
+              </button>
+              {expandedCheck === c.id && (
+                <div className="ml-4 mr-2 mb-3 p-3 bg-slate-50 rounded-lg border border-slate-100 text-xs space-y-2">
+                  <div className="font-semibold text-slate-700">Details</div>
+                  <p className="text-slate-600">{c.details || c.result}</p>
+                </div>
+              )}
             </div>
           ))}
         </div>

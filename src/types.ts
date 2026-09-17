@@ -21,7 +21,48 @@ export type CheckType =
   | 'BUSINESS_IDENTITY'
   | 'THREAT_INTELLIGENCE';
 
-export type CheckStatus = 'NOT_CHECKED' | 'PENDING' | 'PASSED' | 'FAILED' | 'WARNING';
+export type CheckStatus = 'NOT_CHECKED' | 'PENDING' | 'PASSED' | 'FAILED' | 'WARNING' | 'NOT_AVAILABLE';
+
+export type RiskSeverity = 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface VerificationRun {
+  id: string;
+  verificationId: string;
+  startedAt: string;
+  completedAt?: string | null;
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED' | 'PARTIAL';
+  score: number;
+  error?: string | null;
+  createdAt: string;
+}
+
+export interface VerificationRiskIndicator {
+  id: string;
+  verificationRunId: string;
+  type: string;
+  severity: RiskSeverity;
+  title: string;
+  description?: string;
+  evidence?: string;
+  createdAt: string;
+}
+
+export interface ExtendedVerificationCheck extends VerificationCheck {
+  score?: number;
+  evidence?: string;
+  responseTime?: number;
+  metadata?: string;
+}
+
+export interface TechnicalCheckResult {
+  checkType: string;
+  status: CheckStatus;
+  score: number;
+  result: string;
+  details: string;
+  evidence: Record<string, any>;
+  checkedAt: string;
+}
 
 export interface User {
   id: string;
@@ -46,6 +87,7 @@ export interface WebsiteVerification {
   websiteUrl: string;
   status: VerificationStatus;
   riskLevel: RiskLevel;
+  score?: number;
   adminNotes?: string | null;
   submittedAt: string;
   updatedAt: string;
@@ -61,6 +103,7 @@ export interface VerificationCheck {
   status: CheckStatus;
   result?: string | null;
   details?: string | null;
+  score?: number;
   checkedAt?: string | null;
   createdAt: string;
 }

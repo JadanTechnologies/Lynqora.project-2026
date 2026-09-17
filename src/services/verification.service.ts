@@ -12,6 +12,8 @@ import {
   CheckType 
 } from '../types.ts';
 import crypto from 'crypto';
+import { VerificationEngine } from './verification/verification.engine.ts';
+import { VerificationRunResult } from './verification/check.types.ts';
 
 const STANDARD_CHECKS: { type: CheckType; label: string; desc: string }[] = [
   { type: 'DOMAIN_OWNERSHIP', label: 'Domain Ownership', desc: 'DNS TXT or meta-tag cryptographic challenge validation' },
@@ -398,4 +400,196 @@ export class VerificationService {
 
     return await this.getVerificationDetails(verificationId, undefined, true);
   }
+
+  /**
+   * Phase 2: Run automated verification checks
+   */
+  static async runVerification(params: {
+    verificationId: string;
+    userId: string;
+    userEmail: string;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<VerificationRunResult & { runId: string }> {
+    const { verificationId, userId, userEmail, ipAddress, userAgent } = params;
+
+    // Fetch verification record
+    const existing = await pg.query<any>(
+      'SELECT * FROM website_verifications WHERE verification_id = $1',
+      [verificationId.toUpperCase()]
+    );
+
+    if (existing.rows.length === 0) {
+      throw new Error(`Verification ${verificationId} not found.`);
+    }
+
+    const verification = existing.rows[0];
+
+    // Create verification run record
+    const runId = `run_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    await pg.query(`
+      INSERT INTO verification_runs (id, verification_id, started_at, status)
+      VALUES ($1, $2, NOW(), 'RUNNING')
+    `, [runId, verificationId.toUpperCase()]);
+
+    // Log start
+    await AuditService.log({
+      userId,
+      userEmail,
+      action: 'VERIFICATION_RUN_STARTED',
+      entityType: 'WEBSITE_VERIFICATION',
+      entityId: verificationId.toUpperCase(),
+      ipAddress,
+      userAgent,
+      metadata: { domain: verification.normalized_domain, runId }
+    });
+
+    // Run checks
+    const engine = new VerificationEngine();
+    let result: VerificationRunResult;
+    try {
+      result = await engine.runChecks({
+        verificationId: verificationId.toUpperCase(),
+        domain: verification.normalized_domain,
+        websiteUrl: verification.website_url,
+        userId,
+        userEmail,
+        runId
+      });
+    } catch (err: any) {
+      result = {
+        checks: [],
+        riskIndicators: [],
+        score: 0,
+        status: 'FAILED',
+        error: err.message
+      };
+    }
+
+    // Update verification run record
+    await pg.query(`
+      UPDATE verification_runs
+      SET completed_at = NOW(), status = $1, score = $2, error = $3
+      WHERE id = $4
+    `, [result.status, result.score, result.error || null, runId]);
+
+    // Store individual check results
+    for (const check of result.checks) {
+      const checkId = `chk_${verificationId.toUpperCase()}_${check.checkType.toLowerCase()}_${Date.now()}`;
+      await pg.query(`
+        INSERT INTO verification_checks (
+          id, verification_id, check_type, status, result, details, score, evidence, response_time, metadata, checked_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+        ON CONFLICT (verification_id, check_type) DO UPDATE SET
+          status = EXCLUDED.status,
+          result = EXCLUDED.result,
+          details = EXCLUDED.details,
+          score = EXCLUDED.score,
+          evidence = EXCLUDED.evidence,
+          checked_at = EXCLUDED.checked_at
+      `, [
+        checkId,
+        verificationId.toUpperCase(),
+        check.checkType,
+        check.status,
+        check.result,
+        check.details,
+        check.score,
+        JSON.stringify(check.evidence || {}),
+        (check.evidence as any)?.responseTime || null,
+        JSON.stringify({}),
+        check.checkedAt
+      ]);
+    }
+
+    // Store risk indicators
+    for (const risk of result.riskIndicators) {
+      const riskId = `risk_${runId}_${crypto.randomBytes(3).toString('hex')}`;
+      await pg.query(`
+        INSERT INTO verification_risk_indicators (
+          id, verification_run_id, type, severity, title, description, evidence
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `, [
+        riskId,
+        runId,
+        risk.type,
+        risk.severity,
+        risk.title,
+        risk.description,
+        JSON.stringify(risk.evidence || {})
+      ]);
+    }
+
+    // Update verification record
+    const riskLevel = RiskService.getOverallRiskLevel(result.riskIndicators);
+    let newStatus: VerificationStatus = 'UNDER_REVIEW';
+    
+    if (result.riskIndicators.some((r) => r.severity === 'CRITICAL' || r.severity === 'HIGH')) {
+      newStatus = 'RISK_DETECTED';
+    }
+
+    await pg.query(`
+      UPDATE website_verifications
+      SET status = $1, risk_level = $2, updated_at = NOW()
+      WHERE verification_id = $3
+    `, [newStatus, riskLevel, verificationId.toUpperCase()]);
+
+    // Log completion
+    await AuditService.log({
+      userId,
+      userEmail,
+      action: 'VERIFICATION_RUN_COMPLETED',
+      entityType: 'WEBSITE_VERIFICATION',
+      entityId: verificationId.toUpperCase(),
+      ipAddress,
+      userAgent,
+      metadata: { domain: verification.normalized_domain, runId, score: result.score, status: newStatus }
+    });
+
+    // Notify user
+    await NotificationService.create(
+      verification.user_id,
+      'VERIFICATION_COMPLETED',
+      `Verification Complete: ${verification.normalized_domain}`,
+      `Technical verification for ${verification.normalized_domain} completed with score ${result.score}/100. Status: ${newStatus.replace('_', ' ')}.`
+    );
+
+    return { ...result, runId };
+  }
+
+  /**
+   * Phase 2: Get verification run history
+   */
+  static async getVerificationHistory(verificationId: string): Promise<any[]> {
+    const res = await pg.query<any>(`
+      SELECT * FROM verification_runs
+      WHERE verification_id = $1
+      ORDER BY started_at DESC
+    `, [verificationId.toUpperCase()]);
+    return res.rows.map((r) => ({
+      id: r.id,
+      verificationId: r.verification_id,
+      startedAt: r.started_at,
+      completedAt: r.completed_at,
+      status: r.status,
+      score: r.score,
+      error: r.error,
+      createdAt: r.created_at
+    }));
+  }
+
+  /**
+   * Phase 2: Get risk indicators for a verification run
+   */
+  static async getRiskIndicators(runId: string): Promise<any[]> {
+    const res = await pg.query<any>(`
+      SELECT * FROM verification_risk_indicators
+      WHERE verification_run_id = $1
+      ORDER BY created_at ASC
+    `, [runId]);
+    return res.rows;
+  }
 }
+
+// Import RiskService at bottom to avoid circular dependency
+import { RiskService } from './verification/risk.service.ts';

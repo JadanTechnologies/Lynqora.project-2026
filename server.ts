@@ -13,6 +13,8 @@ import {
   requireAdmin, 
   AuthenticatedRequest 
 } from './src/lib/auth.ts';
+import { rateLimiters, getRateLimitKey } from './src/lib/rate-limit.ts';
+import { isSafeUrl } from './src/services/verification/network.util.ts';
 
 async function startServer() {
   const app = express();
@@ -42,12 +44,18 @@ async function startServer() {
   // POST /api/auth/register
   app.post('/api/auth/register', async (req, res) => {
     try {
+      const ip = getClientIp(req);
+      const rlKey = getRateLimitKey(ip);
+      const rl = rateLimiters.register.check(rlKey);
+      if (!rl.allowed) {
+        return res.status(429).json({ error: 'Too many registration attempts. Please try again later.' });
+      }
+
       const { name, email, password } = req.body;
       if (!name || !email || !password) {
         return res.status(400).json({ error: 'Name, email, and password are required.' });
       }
 
-      const ip = getClientIp(req);
       const userAgent = req.headers['user-agent'] || '';
 
       const user = await UserService.register({
@@ -75,12 +83,18 @@ async function startServer() {
   // POST /api/auth/login
   app.post('/api/auth/login', async (req, res) => {
     try {
+      const ip = getClientIp(req);
+      const rlKey = getRateLimitKey(ip);
+      const rl = rateLimiters.login.check(rlKey);
+      if (!rl.allowed) {
+        return res.status(429).json({ error: 'Too many login attempts. Please try again later.' });
+      }
+
       const { email, password, rememberMe } = req.body;
       if (!email || !password) {
         return res.status(400).json({ error: 'Email and password are required.' });
       }
 
-      const ip = getClientIp(req);
       const userAgent = req.headers['user-agent'] || '';
 
       const user = await UserService.authenticate({
@@ -209,7 +223,18 @@ async function startServer() {
         return res.status(400).json({ error: 'Website URL or domain is required.' });
       }
 
+      // SSRF protection: validate URL is safe
+      if (!isSafeUrl(url)) {
+        return res.status(400).json({ error: 'Invalid or unsafe URL. Private/internal addresses are not allowed.' });
+      }
+
       const ip = getClientIp(req);
+      const rlKey = getRateLimitKey(ip, req.user!.id);
+      const rl = rateLimiters.verificationCreate.check(rlKey);
+      if (!rl.allowed) {
+        return res.status(429).json({ error: 'Rate limit exceeded. Please try again later.' });
+      }
+
       const userAgent = req.headers['user-agent'] || '';
 
       const verification = await VerificationService.submitVerification({
@@ -259,6 +284,13 @@ async function startServer() {
   // GET /api/public/verifications/:verificationId (PUBLIC)
   app.get('/api/public/verifications/:verificationId', async (req, res) => {
     try {
+      const ip = getClientIp(req);
+      const rlKey = getRateLimitKey(ip);
+      const rl = rateLimiters.publicLookup.check(rlKey);
+      if (!rl.allowed) {
+        return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+      }
+
       const publicData = await VerificationService.getPublicVerification(req.params.verificationId);
       if (!publicData) {
         return res.status(404).json({ error: 'Verification record not found or invalid Verification ID.' });
@@ -266,6 +298,60 @@ async function startServer() {
       res.json(publicData);
     } catch (err: any) {
       res.status(500).json({ error: 'Failed to retrieve public verification.' });
+    }
+  });
+
+  // POST /api/verifications/:id/run (Phase 2: Run verification)
+  app.post('/api/verifications/:verificationId/run', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const verificationId = req.params.verificationId;
+      const ip = getClientIp(req);
+      const rlKey = getRateLimitKey(ip, req.user!.id);
+      const rl = rateLimiters.verificationRerun.check(rlKey);
+      if (!rl.allowed) {
+        return res.status(429).json({ error: 'Rate limit exceeded. Please try again later.' });
+      }
+
+      const result = await VerificationService.runVerification({
+        verificationId,
+        userId: req.user!.id,
+        userEmail: req.user!.email,
+        ipAddress: ip,
+        userAgent: req.headers['user-agent'] || ''
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Failed to run verification.' });
+    }
+  });
+
+  // GET /api/verifications/:id/results (Phase 2: Get latest results)
+  app.get('/api/verifications/:verificationId/results', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const verificationId = req.params.verificationId;
+      const data = await VerificationService.getVerificationDetails(
+        verificationId,
+        req.user!.id,
+        req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN'
+      );
+      if (!data) {
+        return res.status(404).json({ error: 'Verification not found.' });
+      }
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to retrieve verification results.' });
+    }
+  });
+
+  // GET /api/verifications/:id/history (Phase 2: Run history)
+  app.get('/api/verifications/:verificationId/history', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const verificationId = req.params.verificationId;
+      const history = await VerificationService.getVerificationHistory(verificationId);
+      res.json({ history });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to retrieve verification history.' });
     }
   });
 

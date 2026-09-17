@@ -53,7 +53,33 @@ export async function initDatabase() {
       status TEXT NOT NULL DEFAULT 'NOT_CHECKED',
       result TEXT,
       details TEXT,
+      score INTEGER DEFAULT 0,
+      evidence TEXT,
+      response_time INTEGER,
+      metadata TEXT,
       checked_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS verification_runs (
+      id TEXT PRIMARY KEY,
+      verification_id TEXT NOT NULL REFERENCES website_verifications(verification_id) ON DELETE CASCADE,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ,
+      status TEXT NOT NULL DEFAULT 'RUNNING',
+      score INTEGER DEFAULT 0,
+      error TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS verification_risk_indicators (
+      id TEXT PRIMARY KEY,
+      verification_run_id TEXT NOT NULL REFERENCES verification_runs(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'INFO',
+      title TEXT NOT NULL,
+      description TEXT,
+      evidence TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -94,6 +120,8 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_checks_verif ON verification_checks(verification_id);
     CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
     CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+    CREATE INDEX IF NOT EXISTS idx_runs_verif ON verification_runs(verification_id);
+    CREATE INDEX IF NOT EXISTS idx_risk_run ON verification_risk_indicators(verification_run_id);
   `);
 
   console.log('[Database] Schema verified successfully.');
