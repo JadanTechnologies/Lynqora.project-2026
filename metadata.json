@@ -1,0 +1,6 @@
+{
+  "name": "Lynqora",
+  "description": "Know Who You Trust Online. Lynqora helps you verify websites and understand their trust status before you interact with them.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
